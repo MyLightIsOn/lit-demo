@@ -1,7 +1,6 @@
 import { LitElement, css, html } from 'lit'
-import litLogo from './assets/lit.svg'
-import viteLogo from '/vite.svg'
 import { ImageService } from './services/image-service.js'
+import { ViewportService } from './services/viewport-service.js'
 
 // Embedded bundled sample image as data URL (1x1 transparent PNG)
 // This keeps the sample within the bundle without needing an external file.
@@ -33,6 +32,8 @@ export class MyElement extends LitElement {
     this._hasImage = false
     /** @type {ImageBitmap|null} */
     this._bitmap = null
+    // Track whether viewport was initialized for current image
+    this._vpInit = false
   }
 
   render() {
@@ -69,6 +70,8 @@ export class MyElement extends LitElement {
 
   updated(changed) {
     if (changed.has('_hasImage') || changed.has('_bitmap')) {
+      // Reset viewport init when bitmap changes
+      if (changed.has('_bitmap')) this._vpInit = false
       this._draw()
     }
   }
@@ -124,24 +127,46 @@ export class MyElement extends LitElement {
     if (!canvas) return
     const ctx = canvas.getContext('2d')
     if (!ctx) return
+
+    // Make the canvas fill its container
+    canvas.style.width = '100%'
+    canvas.style.height = '100%'
+
+    // Determine viewport size from the canvas' box (CSS pixels)
+    const vw = canvas.clientWidth | 0
+    const vh = canvas.clientHeight | 0
+    if (vw <= 0 || vh <= 0) return
+
+    // Set canvas internal buffer size (Phase 4 will add DPR handling)
+    if (canvas.width !== vw) canvas.width = vw
+    if (canvas.height !== vh) canvas.height = vh
+
+    // Clear to prepare drawing
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+
     if (!this._bitmap) {
-      // Clear canvas
-      ctx.clearRect(0, 0, canvas.width, canvas.height)
       return
     }
-    // Resize canvas to bitmap size and draw
-    canvas.width = this._bitmap.width
-    canvas.height = this._bitmap.height
+
+    // Initialize/update viewport for this image
+    ViewportService.setViewportSize(vw, vh)
+    ViewportService.setContentSize(this._bitmap.width, this._bitmap.height)
+    if (!this._vpInit) {
+      ViewportService.fitContain()
+      this._vpInit = true
+    } else {
+      // Re-clamp to ensure pan stays valid if sizes changed
+      ViewportService.clampPan()
+    }
+
+    // Apply transform and draw the image
+    ViewportService.applyToContext(ctx)
     ctx.imageSmoothingEnabled = false
     ctx.drawImage(this._bitmap, 0, 0)
-    // For visibility, upscale via CSS if very small
-    if (this._bitmap.width < 128 && this._bitmap.height < 128) {
-      canvas.style.width = '256px'
-      canvas.style.height = '256px'
-    } else {
-      canvas.style.removeProperty('width')
-      canvas.style.removeProperty('height')
-    }
+
+    // Reset transform for any subsequent overlay (not yet implemented)
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
   }
 
   static get styles() {
