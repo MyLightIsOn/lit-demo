@@ -52,7 +52,12 @@ export class MyElement extends LitElement {
 
       <div class="content">
         ${this._hasImage
-          ? html`<canvas id="baseCanvas" width="1" height="1"></canvas>`
+          ? html`
+              <div class="canvas-stack" id="canvasStack">
+                <canvas id="baseCanvas" class="layer base" width="1" height="1"></canvas>
+                <canvas id="overlayCanvas" class="layer overlay" width="1" height="1"></canvas>
+              </div>
+            `
           : html`<div class="empty">
               <p class="empty-msg">${this.docsHint}</p>
               <p class="empty-sub">Click “Upload image” or “Choose sample” to get started.</p>
@@ -64,8 +69,15 @@ export class MyElement extends LitElement {
   }
 
   firstUpdated() {
-    // If already loaded (unlikely on first paint), draw.
+    // Setup resize handling for DPR and container changes
+    this._installResizeHandling()
+    // Initial draw
     this._draw()
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback()
+    this._teardownResizeHandling()
   }
 
   updated(changed) {
@@ -122,51 +134,112 @@ export class MyElement extends LitElement {
     }
   }
 
+  _installResizeHandling() {
+    // Redraw on window resize and DPR changes (e.g., browser zoom)
+    this._onResize = () => this._draw()
+    window.addEventListener('resize', this._onResize, { passive: true })
+
+    // Observe container size changes precisely
+    const stack = /** @type {HTMLElement|null} */ (this.renderRoot?.getElementById('canvasStack'))
+    if (window.ResizeObserver && stack) {
+      this._ro = new ResizeObserver(() => this._draw())
+      this._ro.observe(stack)
+    }
+
+    // Listen to DPR change via media queries (some browsers)
+    try {
+      this._dprMql = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`)
+      if (this._dprMql && this._dprMql.addEventListener) {
+        this._onDprChange = () => this._draw()
+        this._dprMql.addEventListener('change', this._onDprChange)
+      }
+    } catch {}
+  }
+
+  _teardownResizeHandling() {
+    if (this._onResize) window.removeEventListener('resize', this._onResize)
+    if (this._ro) {
+      try { this._ro.disconnect() } catch {}
+      this._ro = null
+    }
+    if (this._dprMql && this._onDprChange && this._dprMql.removeEventListener) {
+      try { this._dprMql.removeEventListener('change', this._onDprChange) } catch {}
+    }
+    this._onResize = null
+    this._onDprChange = null
+    this._dprMql = null
+  }
+
   _draw() {
-    const canvas = /** @type {HTMLCanvasElement|null} */ (this.renderRoot?.getElementById('baseCanvas'))
-    if (!canvas) return
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return
+    const base = /** @type {HTMLCanvasElement|null} */ (this.renderRoot?.getElementById('baseCanvas'))
+    const overlay = /** @type {HTMLCanvasElement|null} */ (this.renderRoot?.getElementById('overlayCanvas'))
+    const stack = /** @type {HTMLElement|null} */ (this.renderRoot?.getElementById('canvasStack'))
+    if (!base || !overlay || !stack) return
 
-    // Make the canvas fill its container
-    canvas.style.width = '100%'
-    canvas.style.height = '100%'
+    // Ensure canvases fill container
+    base.style.width = '100%'
+    base.style.height = '100%'
+    overlay.style.width = '100%'
+    overlay.style.height = '100%'
 
-    // Determine viewport size from the canvas' box (CSS pixels)
-    const vw = canvas.clientWidth | 0
-    const vh = canvas.clientHeight | 0
+    // Compute CSS pixel viewport from the container
+    const vw = stack.clientWidth | 0
+    const vh = stack.clientHeight | 0
     if (vw <= 0 || vh <= 0) return
 
-    // Set canvas internal buffer size (Phase 4 will add DPR handling)
-    if (canvas.width !== vw) canvas.width = vw
-    if (canvas.height !== vh) canvas.height = vh
+    // Device Pixel Ratio handling: scale backing store sizes
+    const dpr = Math.max(1, window.devicePixelRatio || 1)
+    const bw = Math.max(1, Math.round(vw * dpr))
+    const bh = Math.max(1, Math.round(vh * dpr))
+    if (base.width !== bw) base.width = bw
+    if (base.height !== bh) base.height = bh
+    if (overlay.width !== bw) overlay.width = bw
+    if (overlay.height !== bh) overlay.height = bh
 
-    // Clear to prepare drawing
-    ctx.setTransform(1, 0, 0, 1, 0, 0)
-    ctx.clearRect(0, 0, canvas.width, canvas.height)
+    const bctx = base.getContext('2d')
+    const octx = overlay.getContext('2d')
+    if (!bctx || !octx) return
+
+    // Clear both layers at device-pixel resolution
+    bctx.setTransform(1, 0, 0, 1, 0, 0)
+    bctx.clearRect(0, 0, base.width, base.height)
+    octx.setTransform(1, 0, 0, 1, 0, 0)
+    octx.clearRect(0, 0, overlay.width, overlay.height)
 
     if (!this._bitmap) {
       return
     }
 
-    // Initialize/update viewport for this image
+    // Initialize/update viewport for this image (in CSS pixels)
     ViewportService.setViewportSize(vw, vh)
     ViewportService.setContentSize(this._bitmap.width, this._bitmap.height)
     if (!this._vpInit) {
       ViewportService.fitContain()
       this._vpInit = true
     } else {
-      // Re-clamp to ensure pan stays valid if sizes changed
       ViewportService.clampPan()
     }
 
-    // Apply transform and draw the image
-    ViewportService.applyToContext(ctx)
-    ctx.imageSmoothingEnabled = false
-    ctx.drawImage(this._bitmap, 0, 0)
+    // Apply combined DPR + viewport transform to base context
+    const [a, , , d, e, f] = ViewportService.getTransform()
+    bctx.setTransform(a * dpr, 0, 0, d * dpr, e * dpr, f * dpr)
+    bctx.imageSmoothingEnabled = false
+    bctx.drawImage(this._bitmap, 0, 0)
 
-    // Reset transform for any subsequent overlay (not yet implemented)
-    ctx.setTransform(1, 0, 0, 1, 0, 0)
+    // Reset transform for overlay; overlay will draw in CSS pixels scaled by DPR
+    octx.setTransform(dpr, 0, 0, dpr, 0, 0)
+
+    // Example minimal overlay: draw a crisp border rectangle and center crosshair
+    octx.strokeStyle = 'rgba(255,255,255,0.25)'
+    octx.lineWidth = 1
+    octx.strokeRect(0.5, 0.5, vw - 1, vh - 1) // 0.5 aligns stroke to pixel grid
+
+    octx.beginPath()
+    octx.moveTo((vw / 2) - 10, vh / 2)
+    octx.lineTo((vw / 2) + 10, vh / 2)
+    octx.moveTo(vw / 2, (vh / 2) - 10)
+    octx.lineTo(vw / 2, (vh / 2) + 10)
+    octx.stroke()
   }
 
   static get styles() {
@@ -189,13 +262,31 @@ export class MyElement extends LitElement {
         border: 1px dashed #555;
         border-radius: 8px;
         display: grid;
-        place-items: center;
+        place-items: stretch;
         background: #111;
         padding: 1rem;
       }
 
+      .canvas-stack {
+        position: relative;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #000;
+      }
+      .canvas-stack .layer {
+        position: absolute;
+        inset: 0;
+        display: block;
+        image-rendering: pixelated;
+      }
+      .canvas-stack .overlay {
+        pointer-events: none; /* overlay shouldn't capture interactions yet */
+      }
+
       .empty {
         color: #bbb;
+        place-self: center; /* center the empty state */
       }
       .empty-msg {
         margin: 0.5rem 0;
