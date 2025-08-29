@@ -30,6 +30,9 @@ class ViewportServiceImpl {
     // Zoom constraints
     this.minScale = 1
     this.maxScale = 8
+
+    // Epsilon for float comparisons
+    this._eps = 1e-6
   }
 
   // --- Sizing ----------------------------------------------------------------
@@ -40,9 +43,59 @@ class ViewportServiceImpl {
    * @param {number} height
    */
   setViewportSize(width, height) {
-    this.vw = Math.max(0, width | 0)
-    this.vh = Math.max(0, height | 0)
-    // Re-clamp pan because bounds change with viewport size
+    const newVw = Math.max(0, width | 0)
+    const newVh = Math.max(0, height | 0)
+
+    // If nothing changes, bail early
+    if (newVw === this.vw && newVh === this.vh) return
+
+    // Capture old state before changing viewport
+    const oldVw = this.vw
+    const oldVh = this.vh
+    const oldScale = this.scale
+    const oldTx = this.tx
+    const oldTy = this.ty
+    const cw = this.cw
+    const ch = this.ch
+
+    // Compute old minScale based on old viewport (for fit detection)
+    const oldMin = oldVw > 0 && oldVh > 0 && cw > 0 && ch > 0 ? Math.min(oldVw / cw, oldVh / ch) : this.minScale
+
+    // Determine if we were essentially in a fitContain state previously
+    const wasFitScale = Math.abs(oldScale - oldMin) <= 1e-4
+    const wasFitTx = Math.abs(oldTx - ((oldVw - cw * oldScale) / 2)) <= 0.5
+    const wasFitTy = Math.abs(oldTy - ((oldVh - ch * oldScale) / 2)) <= 0.5
+    const wasFit = wasFitScale && wasFitTx && wasFitTy
+
+    // Compute the image point under the previous viewport center to preserve as anchor
+    const centerOld = { x: (oldVw || 0) / 2, y: (oldVh || 0) / 2 }
+    const imageX = oldScale ? (centerOld.x - oldTx) / oldScale : 0
+    const imageY = oldScale ? (centerOld.y - oldTy) / oldScale : 0
+
+    // Apply new viewport size
+    this.vw = newVw
+    this.vh = newVh
+
+    // Recompute minScale/maxScale according to new viewport
+    this._recomputeMinScale()
+
+    if (wasFit) {
+      // If we were at exact fit, stay at fit (centered) after resize
+      this.fitContain()
+      return
+    }
+
+    // Otherwise, preserve the image point under the previous center
+    // Ensure scale is not below new min
+    if (this.scale < this.minScale) this.scale = this.minScale
+
+    // Place the preserved image point under the new center
+    const centerNewX = this.vw / 2
+    const centerNewY = this.vh / 2
+    this.tx = centerNewX - imageX * this.scale
+    this.ty = centerNewY - imageY * this.scale
+
+    // Finally, clamp to bounds to avoid drifting outside
     this.clampPan()
   }
 
