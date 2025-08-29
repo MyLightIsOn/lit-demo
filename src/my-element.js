@@ -57,6 +57,11 @@ export class MyElement extends LitElement {
     this._pointerId = null
     this._lastX = 0
     this._lastY = 0
+
+    // Toasts state
+    /** @type {{id:number,message:string}[]} */
+    this._toasts = []
+    this._nextToastId = 1
   }
 
   render() {
@@ -80,8 +85,20 @@ export class MyElement extends LitElement {
         </div>
       </div>
 
-      ${this._error ? html`<p class="error">${this._error}</p>` : ''}
+      <div class="toasts" aria-live="polite" aria-atomic="true">
+        ${this._toasts.map(t => html`<div class="toast" role="status">${t.message}</div>`)}
+      </div>
     `
+  }
+
+  _showToast(message, timeoutMs = 4500) {
+    const id = this._nextToastId++
+    this._toasts = [...this._toasts, { id, message }]
+    // Auto-dismiss after timeout
+    setTimeout(() => {
+      this._toasts = this._toasts.filter(t => t.id !== id)
+      this.requestUpdate()
+    }, timeoutMs)
   }
 
   firstUpdated() {
@@ -121,6 +138,8 @@ export class MyElement extends LitElement {
   async _onChooseSample() {
     this._error = ''
     this._loading = true
+    const prevBitmap = this._bitmap
+    const prevHasImage = this._hasImage
     try {
       // Load via ImageService from a bundled URL
       Telemetry.mark('imageLoadStart'); Telemetry.startTimer('imageLoad')
@@ -135,9 +154,10 @@ export class MyElement extends LitElement {
       } : null
     } catch (err) {
       const msg = (err && (err.isFriendly ? err.message : err.message)) || 'Failed to load sample.'
-      this._error = msg
-      this._hasImage = false
-      this._bitmap = null
+      this._showToast(`${msg} Try again or choose another image.`)
+      // Preserve last stable state
+      this._bitmap = prevBitmap
+      this._hasImage = prevHasImage
     } finally {
       try { Telemetry.endTimer('imageLoad') } catch {}
       this._loading = false
@@ -158,6 +178,8 @@ export class MyElement extends LitElement {
 
     this._error = ''
     this._loading = true
+    const prevBitmap = this._bitmap
+    const prevHasImage = this._hasImage
     try {
       Telemetry.mark('imageLoadStart'); Telemetry.startTimer('imageLoad')
       const { working } = await ImageService.loadFromFile(file)
@@ -171,9 +193,10 @@ export class MyElement extends LitElement {
       } : null
     } catch (err) {
       const msg = (err && (err.isFriendly ? err.message : err.message)) || 'Failed to load image.'
-      this._error = msg
-      this._hasImage = false
-      this._bitmap = null
+      this._showToast(`${msg} Try a PNG, JPEG, or WebP, or resize the image and try again.`)
+      // Preserve last stable state
+      this._bitmap = prevBitmap
+      this._hasImage = prevHasImage
     } finally {
       try { Telemetry.endTimer('imageLoad') } catch {}
       this._loading = false
@@ -703,6 +726,7 @@ export class MyElement extends LitElement {
         place-items: stretch;
         background: #111;
         padding: 1rem;
+        position: relative;
       }
 
       .canvas-stack {
@@ -728,6 +752,31 @@ export class MyElement extends LitElement {
       }
       .canvas-stack.hand.grabbing {
         cursor: grabbing;
+      }
+
+      /* Toasts */
+      .toasts {
+        position: fixed;
+        left: 50%;
+        transform: translateX(-50%);
+        bottom: 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        z-index: 1000;
+        pointer-events: none;
+      }
+      .toast {
+        pointer-events: auto;
+        background: rgba(20,20,20,0.92);
+        color: #fff;
+        padding: 10px 14px;
+        border-radius: 8px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+        max-width: min(90vw, 560px);
+        font-size: 14px;
+        line-height: 1.4;
+        border: 1px solid rgba(255,255,255,0.08);
       }
 
       .empty {
