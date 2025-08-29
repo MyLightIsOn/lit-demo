@@ -2,6 +2,7 @@ import { LitElement, css, html } from 'lit'
 import { ImageService } from './services/image-service.js'
 import { ViewportService } from './services/viewport-service.js'
 import { Telemetry } from './services/telemetry-service.js'
+import './telemetry-readout.js'
 
 // Embedded bundled sample image as data URL (1x1 transparent PNG)
 // This keeps the sample within the bundle without needing an external file.
@@ -88,6 +89,8 @@ export class MyElement extends LitElement {
       <div class="toasts" aria-live="polite" aria-atomic="true">
         ${this._toasts.map(t => html`<div class="toast" role="status">${t.message}</div>`)}
       </div>
+
+      <telemetry-readout></telemetry-readout>
     `
   }
 
