@@ -32,6 +32,8 @@ export class MyElement extends LitElement {
     this._hasImage = false
     /** @type {ImageBitmap|null} */
     this._bitmap = null
+    /** @type {{percent:number,workingWidth:number,workingHeight:number}|null} */
+    this._downscaleInfo = null
     // Track whether viewport was initialized for current image
     this._vpInit = false
 
@@ -115,6 +117,12 @@ export class MyElement extends LitElement {
       const { working } = await ImageService.loadFromUrl(SAMPLE_IMAGE_URL)
       this._bitmap = working
       this._hasImage = !!working
+      const meta = ImageService.getMetadata()
+      this._downscaleInfo = meta && meta.isDownscaled ? {
+        percent: Math.round((meta.downscaleFactor || 1) * 100),
+        workingWidth: meta.workingWidth,
+        workingHeight: meta.workingHeight,
+      } : null
     } catch (err) {
       const msg = (err && (err.isFriendly ? err.message : err.message)) || 'Failed to load sample.'
       this._error = msg
@@ -143,6 +151,12 @@ export class MyElement extends LitElement {
       const { working } = await ImageService.loadFromFile(file)
       this._bitmap = working
       this._hasImage = !!working
+      const meta = ImageService.getMetadata()
+      this._downscaleInfo = meta && meta.isDownscaled ? {
+        percent: Math.round((meta.downscaleFactor || 1) * 100),
+        workingWidth: meta.workingWidth,
+        workingHeight: meta.workingHeight,
+      } : null
     } catch (err) {
       const msg = (err && (err.isFriendly ? err.message : err.message)) || 'Failed to load image.'
       this._error = msg
@@ -453,6 +467,11 @@ export class MyElement extends LitElement {
 
     // Overlay hints when image is present (no selection system yet): show brush hint
     this._drawOnImageHint(octx, vw, vh)
+
+    // If working image is downscaled, show a small badge to inform the user
+    if (this._downscaleInfo) {
+      this._drawDownscaleBadge(octx, vw, vh)
+    }
   }
 
   // --- Overlay drawing helpers ---------------------------------------------
@@ -525,6 +544,44 @@ export class MyElement extends LitElement {
     ctx.shadowOffsetX = 0
     ctx.shadowOffsetY = 1
     ctx.fillText(text, Math.round(x), Math.round(y))
+    ctx.restore()
+  }
+
+  _drawDownscaleBadge(ctx, vw, vh) {
+    const info = this._downscaleInfo
+    if (!info) return
+    const text = `Preview downscaled to ${info.percent}%`
+    ctx.save()
+    ctx.textAlign = 'left'
+    ctx.textBaseline = 'top'
+    const base = Math.max(10, Math.min(13, Math.round(Math.min(vw, vh) * 0.025)))
+    ctx.font = `500 ${base}px system-ui, -apple-system, Segoe UI, Roboto, sans-serif`
+    const padding = Math.round(base * 0.6)
+    const metricsWidth = Math.ceil(ctx.measureText(text).width)
+    const w = metricsWidth + padding * 2
+    const h = Math.round(base * 2)
+    const x = 8
+    const y = 8
+    // Background rounded rect
+    ctx.fillStyle = 'rgba(0,0,0,0.55)'
+    const r = Math.min(8, Math.round(h * 0.35))
+    const right = x + w
+    const bottom = y + h
+    ctx.beginPath()
+    ctx.moveTo(x + r, y)
+    ctx.lineTo(right - r, y)
+    ctx.quadraticCurveTo(right, y, right, y + r)
+    ctx.lineTo(right, bottom - r)
+    ctx.quadraticCurveTo(right, bottom, right - r, bottom)
+    ctx.lineTo(x + r, bottom)
+    ctx.quadraticCurveTo(x, bottom, x, bottom - r)
+    ctx.lineTo(x, y + r)
+    ctx.quadraticCurveTo(x, y, x + r, y)
+    ctx.closePath()
+    ctx.fill()
+    // Text
+    ctx.fillStyle = 'rgba(255,255,255,0.95)'
+    this._drawTextWithShadow(ctx, text, x + padding, y + Math.round((h - base) / 2))
     ctx.restore()
   }
 

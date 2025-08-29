@@ -34,6 +34,11 @@ class ImageServiceImpl {
     this._working = null
     /** @type {ImageMetadata|null} */
     this._meta = null
+
+    // Large image guardrails (tunable)
+    this.DISPLAY_MAX_DIM = 6000 // soft cap for display/working buffer
+    this.HARD_MAX_DIM = 12000 // hard per-side cap; above this we reject
+    this.HARD_MAX_PIXELS = 100 * 1e6 // 100 megapixels hard cap
   }
 
   /**
@@ -94,7 +99,8 @@ class ImageServiceImpl {
    */
   async resetWorking() {
     if (!this._original) return
-    this._working = await this._cloneBitmap(this._original)
+    // Re-create a working buffer respecting downscale rules
+    this._working = await this._makeWorkingFromOriginal()
   }
 
   // Internal -----------------------------------------------------------------
@@ -130,15 +136,49 @@ class ImageServiceImpl {
       )
     }
 
+    // Before normalization, compute post-orientation dimensions for guardrails
+    const sw = decoded.width
+    const sh = decoded.height
+    const isRotated = orientation >= 5 && orientation <= 8
+    const expectedW = isRotated ? sh : sw
+    const expectedH = isRotated ? sw : sh
+
+    // Hard limits: reject excessively large sources to avoid memory crashes
+    const preOw = expectedW
+    const preOh = expectedH
+    const prePixels = preOw * preOh
+    if (preOw > this.HARD_MAX_DIM || preOh > this.HARD_MAX_DIM || prePixels > this.HARD_MAX_PIXELS) {
+      throw this._friendlyError(
+        `Image is too large to open (max ${this.HARD_MAX_DIM}px per side or ~${Math.round(this.HARD_MAX_PIXELS/1e6)}MP). ` +
+        'Please resize the image in an external editor and try again.'
+      )
+    }
+
     // Normalize orientation: draw to canvas with transforms and create upright bitmap
     const upright = await this._normalizeOrientation(decoded, orientation)
 
     // Prepare original and working buffers
     this._original = upright
-    this._working = await this._cloneBitmap(upright)
 
-    const width = upright.width
-    const height = upright.height
+    // Hard limits: double-check after normalization (paranoia)
+    const ow = upright.width
+    const oh = upright.height
+    const opixels = ow * oh
+    if (ow > this.HARD_MAX_DIM || oh > this.HARD_MAX_DIM || opixels > this.HARD_MAX_PIXELS) {
+      // Cleanup decoded/upright bitmaps to free memory hint (GC will handle)
+      this._original = null
+      this._working = null
+      throw this._friendlyError(
+        `Image is too large to open (max ${this.HARD_MAX_DIM}px per side or ~${Math.round(this.HARD_MAX_PIXELS/1e6)}MP). ` +
+        'Please resize the image in an external editor and try again.'
+      )
+    }
+
+    // Create working buffer, possibly downscaled for display performance
+    this._working = await this._makeWorkingFromOriginal()
+
+    const width = ow
+    const height = oh
 
     this._meta = {
       ...baseMeta,
@@ -147,6 +187,16 @@ class ImageServiceImpl {
       height,
       orientation,
       byteLength,
+      // Extended metadata for guardrails
+      workingWidth: this._working?.width || width,
+      workingHeight: this._working?.height || height,
+      isDownscaled: !!(this._working && (this._working.width !== width || this._working.height !== height)),
+      downscaleFactor: this._working ? (this._working.width / width) : 1,
+      limits: {
+        displayMaxDim: this.DISPLAY_MAX_DIM,
+        hardMaxDim: this.HARD_MAX_DIM,
+        hardMaxPixels: this.HARD_MAX_PIXELS,
+      },
     }
 
     return {
@@ -206,6 +256,35 @@ class ImageServiceImpl {
     const blob = await new Promise((resolve) => canvas.toBlob(resolve))
     if (!blob) throw new Error('Canvas toBlob failed')
     return await this._decodeToBitmap(blob)
+  }
+
+  /**
+   * Create the working buffer from the original, applying display downscale if needed.
+   * @returns {Promise<ImageBitmap>}
+   */
+  async _makeWorkingFromOriginal() {
+    const src = this._original
+    if (!src) throw new Error('No original image')
+    const w = src.width
+    const h = src.height
+    const longSide = Math.max(w, h)
+    if (longSide <= this.DISPLAY_MAX_DIM) {
+      // No downscale needed; clone so working is independent
+      return await this._cloneBitmap(src)
+    }
+    const scale = this.DISPLAY_MAX_DIM / longSide
+    const dw = Math.max(1, Math.round(w * scale))
+    const dh = Math.max(1, Math.round(h * scale))
+
+    const canvas = document.createElement('canvas')
+    canvas.width = dw
+    canvas.height = dh
+    const ctx = canvas.getContext('2d')
+    // Use high-quality downscale
+    ctx.imageSmoothingEnabled = true
+    if ('imageSmoothingQuality' in ctx) ctx.imageSmoothingQuality = 'high'
+    ctx.drawImage(src, 0, 0, w, h, 0, 0, dw, dh)
+    return await this._canvasToBitmap(canvas)
   }
 
   async _cloneBitmap(bitmap) {
