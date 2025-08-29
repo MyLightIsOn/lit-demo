@@ -1,9 +1,15 @@
 import { LitElement, css, html } from 'lit'
 import litLogo from './assets/lit.svg'
 import viteLogo from '/vite.svg'
+import { ImageService } from './services/image-service.js'
+
+// Embedded bundled sample image as data URL (1x1 transparent PNG)
+// This keeps the sample within the bundle without needing an external file.
+const SAMPLE_IMAGE_URL =
+  '/samples/apple.png'
 
 /**
- * An example element.
+ * Canvas editor shell (placeholder) with sample picker wiring.
  *
  * @slot - This element has a slot
  * @csspart button - The button
@@ -11,46 +17,131 @@ import viteLogo from '/vite.svg'
 export class MyElement extends LitElement {
   static get properties() {
     return {
-      /**
-       * Copy for the read the docs hint.
-       */
-      docsHint: { type: String },
-
-      /**
-       * The number of times the button has been clicked.
-       */
-      count: { type: Number },
+      // Internal state flags
+      _loading: { state: true },
+      _error: { state: true },
+      // Track if an image is loaded
+      _hasImage: { state: true },
     }
   }
 
   constructor() {
     super()
-    this.docsHint = 'Click on the Vite and Lit logos to learn more'
-    this.count = 0
+    this.docsHint = 'Choose an Image'
+    this._loading = false
+    this._error = ''
+    this._hasImage = false
+    /** @type {ImageBitmap|null} */
+    this._bitmap = null
   }
 
   render() {
     return html`
-      <div>
-        <a href="https://vite.dev" target="_blank">
-          <img src=${viteLogo} class="logo" alt="Vite logo" />
-        </a>
-        <a href="https://lit.dev" target="_blank">
-          <img src=${litLogo} class="logo lit" alt="Lit logo" />
-        </a>
-      </div>
-      <slot></slot>
-      <div class="card">
-        <button @click=${this._onClick} part="button">
-          count is ${this.count}
+
+
+      <div class="toolbar">
+        <button @click=${this._onChooseSample} part="button" ?disabled=${this._loading}>
+          ${this._loading ? 'Loading…' : 'Choose sample'}
+        </button>
+        <input id="fileInput" type="file" accept="image/png,image/jpeg,image/webp" @change=${this._onFileChosen} hidden />
+        <button @click=${this._onUploadClick} part="button" ?disabled=${this._loading}>
+          ${this._loading ? 'Loading…' : 'Upload image'}
         </button>
       </div>
-      <p class="read-the-docs">${this.docsHint}</p>
+
+      <div class="content">
+        ${this._hasImage
+          ? html`<canvas id="baseCanvas" width="1" height="1"></canvas>`
+          : html`<div class="empty">
+              <p class="empty-msg">${this.docsHint}</p>
+              <p class="empty-sub">Click “Upload image” or “Choose sample” to get started.</p>
+            </div>`}
+      </div>
+
+      ${this._error ? html`<p class="error">${this._error}</p>` : ''}
     `
   }
 
-  _onClick() {
-    this.count++
+  firstUpdated() {
+    // If already loaded (unlikely on first paint), draw.
+    this._draw()
+  }
+
+  updated(changed) {
+    if (changed.has('_hasImage') || changed.has('_bitmap')) {
+      this._draw()
+    }
+  }
+
+  async _onChooseSample() {
+    this._error = ''
+    this._loading = true
+    try {
+      // Load via ImageService from a bundled URL
+      const { working } = await ImageService.loadFromUrl(SAMPLE_IMAGE_URL)
+      this._bitmap = working
+      this._hasImage = !!working
+    } catch (err) {
+      const msg = (err && (err.isFriendly ? err.message : err.message)) || 'Failed to load sample.'
+      this._error = msg
+      this._hasImage = false
+      this._bitmap = null
+    } finally {
+      this._loading = false
+    }
+  }
+
+  _onUploadClick() {
+    const input = /** @type {HTMLInputElement|null} */ (this.renderRoot?.getElementById('fileInput'))
+    input?.click()
+  }
+
+  async _onFileChosen(event) {
+    const input = /** @type {HTMLInputElement} */ (event.currentTarget)
+    const file = input?.files && input.files[0]
+    // Clear selection so choosing the same file again will trigger change
+    if (input) input.value = ''
+    if (!file) return
+
+    this._error = ''
+    this._loading = true
+    try {
+      const { working } = await ImageService.loadFromFile(file)
+      this._bitmap = working
+      this._hasImage = !!working
+    } catch (err) {
+      const msg = (err && (err.isFriendly ? err.message : err.message)) || 'Failed to load image.'
+      this._error = msg
+      this._hasImage = false
+      this._bitmap = null
+    } finally {
+      this._loading = false
+    }
+  }
+
+  _draw() {
+    const canvas = /** @type {HTMLCanvasElement|null} */ (this.renderRoot?.getElementById('baseCanvas'))
+    if (!canvas) return
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    if (!this._bitmap) {
+      // Clear canvas
+      ctx.clearRect(0, 0, canvas.width, canvas.height)
+      return
+    }
+    // Resize canvas to bitmap size and draw
+    canvas.width = this._bitmap.width
+    canvas.height = this._bitmap.height
+    ctx.imageSmoothingEnabled = false
+    ctx.drawImage(this._bitmap, 0, 0)
+    // For visibility, upscale via CSS if very small
+    if (this._bitmap.width < 128 && this._bitmap.height < 128) {
+      canvas.style.width = '256px'
+      canvas.style.height = '256px'
+    } else {
+      canvas.style.removeProperty('width')
+      canvas.style.removeProperty('height')
+    }
   }
 
   static get styles() {
@@ -60,41 +151,39 @@ export class MyElement extends LitElement {
         margin: 0 auto;
         padding: 2rem;
         text-align: center;
+        display: block;
       }
-
-      .logo {
-        height: 6em;
-        padding: 1.5em;
-        will-change: filter;
-        transition: filter 300ms;
-      }
-      .logo:hover {
-        filter: drop-shadow(0 0 2em #646cffaa);
-      }
-      .logo.lit:hover {
-        filter: drop-shadow(0 0 2em #325cffaa);
-      }
+      
 
       .card {
         padding: 2em;
       }
 
-      .read-the-docs {
+      .content {
+        min-height: 280px;
+        border: 1px dashed #555;
+        border-radius: 8px;
+        display: grid;
+        place-items: center;
+        background: #111;
+        padding: 1rem;
+      }
+
+      .empty {
+        color: #bbb;
+      }
+      .empty-msg {
+        margin: 0.5rem 0;
+        font-size: 1.1rem;
+      }
+      .empty-sub {
+        margin: 0;
+        font-size: 0.9rem;
         color: #888;
       }
 
-      a {
-        font-weight: 500;
-        color: #646cff;
-        text-decoration: inherit;
-      }
-      a:hover {
-        color: #535bf2;
-      }
-
-      ::slotted(h1) {
-        font-size: 3.2em;
-        line-height: 1.1;
+      .error {
+        color: #ff6b6b;
       }
 
       button {
@@ -117,8 +206,12 @@ export class MyElement extends LitElement {
       }
 
       @media (prefers-color-scheme: light) {
-        a:hover {
-          color: #747bff;
+        .content {
+          background: #f7f7f7;
+          border-color: #ccc;
+        }
+        .empty-sub {
+          color: #666;
         }
         button {
           background-color: #f9f9f9;
