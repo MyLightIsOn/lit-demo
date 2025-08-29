@@ -198,9 +198,39 @@ export class MyElement extends LitElement {
 
   // --- Input handling: spacebar-hand + mouse pan -----------------------------
   _installInputHandling() {
-    // Keyboard: spacebar toggles temporary Hand mode
+    // Keyboard: spacebar hand + zoom shortcuts
     this._onKeyDown = (e) => {
       if (this._isTextInput(e.target)) return
+
+      // Zoom shortcuts
+      const metaOrCtrl = !!(e.metaKey || e.ctrlKey)
+      const stack = /** @type {HTMLElement|null} */ (this.renderRoot?.getElementById('canvasStack'))
+      if (metaOrCtrl && stack) {
+        const rect = stack.getBoundingClientRect()
+        const sx = rect.width / 2
+        const sy = rect.height / 2
+        if (e.key === '+' || e.key === '=' || e.code === 'Equal') {
+          ViewportService.zoomAt(1.1, sx, sy)
+          this._invalidate({ viewport: true })
+          e.preventDefault()
+          return
+        }
+        if (e.key === '-' || e.key === '_' || e.code === 'Minus') {
+          ViewportService.zoomAt(1 / 1.1, sx, sy)
+          this._invalidate({ viewport: true })
+          e.preventDefault()
+          return
+        }
+      }
+      // Fit to screen on '0'
+      if (!e.metaKey && !e.ctrlKey && (e.key === '0' || e.code === 'Digit0')) {
+        ViewportService.fitContain()
+        this._invalidate({ viewport: true })
+        e.preventDefault()
+        return
+      }
+
+      // Temporary hand via Space
       if (e.code === 'Space' || e.key === ' ' || e.key === 'Spacebar') {
         if (!this._spaceDown) {
           this._spaceDown = true
@@ -231,6 +261,21 @@ export class MyElement extends LitElement {
 
     // Ensure we can set cursor on stack and suppress selection
     stack.style.userSelect = 'none'
+
+    // Wheel zoom (cursor-anchored)
+    this._onWheel = (e) => {
+      if (!this._bitmap) return
+      const rect = stack.getBoundingClientRect()
+      const sx = e.clientX - rect.left
+      const sy = e.clientY - rect.top
+      // Normalize delta (pixels vs lines)
+      const delta = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY
+      const factor = Math.exp(-delta * 0.0015) // tune sensitivity
+      ViewportService.zoomAt(factor, sx, sy)
+      this._invalidate({ viewport: true })
+      e.preventDefault()
+    }
+    stack.addEventListener('wheel', this._onWheel, { passive: false })
 
     this._onPointerDown = (e) => {
       if (!this._handActive) return
@@ -274,8 +319,12 @@ export class MyElement extends LitElement {
     window.removeEventListener('keydown', this._onKeyDown)
     window.removeEventListener('keyup', this._onKeyUp)
     const base = /** @type {HTMLCanvasElement|null} */ (this.renderRoot?.getElementById('baseCanvas'))
+    const stack = /** @type {HTMLElement|null} */ (this.renderRoot?.getElementById('canvasStack'))
     if (base) {
       base.removeEventListener('pointerdown', this._onPointerDown)
+    }
+    if (stack) {
+      stack.removeEventListener('wheel', this._onWheel)
     }
     window.removeEventListener('pointermove', this._onPointerMove)
     window.removeEventListener('pointerup', this._onPointerUp)
@@ -284,6 +333,7 @@ export class MyElement extends LitElement {
     this._onPointerDown = null
     this._onPointerMove = null
     this._onPointerUp = null
+    this._onWheel = null
   }
 
   _isTextInput(target) {
