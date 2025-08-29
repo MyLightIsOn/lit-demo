@@ -40,6 +40,14 @@ export class MyElement extends LitElement {
     this._dirtyViewport = false
     this._dirtyOverlay = false
     this._raf = 0
+
+    // Input / interaction state
+    this._spaceDown = false
+    this._handActive = false // temporary hand while space held (no full tool system yet)
+    this._panning = false
+    this._pointerId = null
+    this._lastX = 0
+    this._lastY = 0
   }
 
   render() {
@@ -77,6 +85,8 @@ export class MyElement extends LitElement {
   firstUpdated() {
     // Setup resize handling for DPR and container changes
     this._installResizeHandling()
+    // Setup input handling (spacebar hand + pan)
+    this._installInputHandling()
     // Initial invalidate to kick the RAF loop
     this._invalidate({ image: true, viewport: true, overlay: true })
   }
@@ -84,6 +94,7 @@ export class MyElement extends LitElement {
   disconnectedCallback() {
     super.disconnectedCallback()
     this._teardownResizeHandling()
+    this._teardownInputHandling()
     if (this._raf) {
       cancelAnimationFrame(this._raf)
       this._raf = 0
@@ -95,6 +106,11 @@ export class MyElement extends LitElement {
       // Reset viewport init when bitmap changes
       if (changed.has('_bitmap')) this._vpInit = false
       this._invalidate({ image: true, viewport: true, overlay: true })
+    }
+    // Reinstall input handlers when canvas stack appears/disappears
+    if (changed.has('_hasImage')) {
+      this._teardownInputHandling()
+      this._installInputHandling()
     }
   }
 
@@ -178,6 +194,122 @@ export class MyElement extends LitElement {
     this._onResize = null
     this._onDprChange = null
     this._dprMql = null
+  }
+
+  // --- Input handling: spacebar-hand + mouse pan -----------------------------
+  _installInputHandling() {
+    // Keyboard: spacebar toggles temporary Hand mode
+    this._onKeyDown = (e) => {
+      if (this._isTextInput(e.target)) return
+      if (e.code === 'Space' || e.key === ' ' || e.key === 'Spacebar') {
+        if (!this._spaceDown) {
+          this._spaceDown = true
+          this._handActive = true
+          this._updateHandCursor()
+        }
+        e.preventDefault()
+      }
+    }
+    this._onKeyUp = (e) => {
+      if (e.code === 'Space' || e.key === ' ' || e.key === 'Spacebar') {
+        this._spaceDown = false
+        // If not actively panning, exit hand
+        if (!this._panning) {
+          this._handActive = false
+          this._updateHandCursor()
+        }
+        e.preventDefault()
+      }
+    }
+    window.addEventListener('keydown', this._onKeyDown)
+    window.addEventListener('keyup', this._onKeyUp)
+
+    // Pointer: pan on drag while hand is active
+    const base = /** @type {HTMLCanvasElement|null} */ (this.renderRoot?.getElementById('baseCanvas'))
+    const stack = /** @type {HTMLElement|null} */ (this.renderRoot?.getElementById('canvasStack'))
+    if (!base || !stack) return
+
+    // Ensure we can set cursor on stack and suppress selection
+    stack.style.userSelect = 'none'
+
+    this._onPointerDown = (e) => {
+      if (!this._handActive) return
+      if (e.button !== 0) return // left button only
+      this._panning = true
+      this._pointerId = e.pointerId
+      base.setPointerCapture?.(e.pointerId)
+      this._lastX = e.clientX
+      this._lastY = e.clientY
+      this._updateHandCursor(true) // grabbing
+      e.preventDefault()
+    }
+    this._onPointerMove = (e) => {
+      if (!this._panning || e.pointerId !== this._pointerId) return
+      const dx = e.clientX - this._lastX
+      const dy = e.clientY - this._lastY
+      this._lastX = e.clientX
+      this._lastY = e.clientY
+      if (dx || dy) {
+        ViewportService.panBy(dx, dy)
+        this._invalidate({ viewport: true })
+      }
+      e.preventDefault()
+    }
+    this._onPointerUp = (e) => {
+      if (e.pointerId !== this._pointerId) return
+      this._panning = false
+      this._pointerId = null
+      base.releasePointerCapture?.(e.pointerId)
+      // If space no longer held, exit hand
+      if (!this._spaceDown) this._handActive = false
+      this._updateHandCursor(false)
+      e.preventDefault()
+    }
+    base.addEventListener('pointerdown', this._onPointerDown)
+    window.addEventListener('pointermove', this._onPointerMove)
+    window.addEventListener('pointerup', this._onPointerUp)
+  }
+
+  _teardownInputHandling() {
+    window.removeEventListener('keydown', this._onKeyDown)
+    window.removeEventListener('keyup', this._onKeyUp)
+    const base = /** @type {HTMLCanvasElement|null} */ (this.renderRoot?.getElementById('baseCanvas'))
+    if (base) {
+      base.removeEventListener('pointerdown', this._onPointerDown)
+    }
+    window.removeEventListener('pointermove', this._onPointerMove)
+    window.removeEventListener('pointerup', this._onPointerUp)
+    this._onKeyDown = null
+    this._onKeyUp = null
+    this._onPointerDown = null
+    this._onPointerMove = null
+    this._onPointerUp = null
+  }
+
+  _isTextInput(target) {
+    if (!target) return false
+    const el = /** @type {HTMLElement} */ (target)
+    const tag = (el.tagName || '').toLowerCase()
+    if (tag === 'input' || tag === 'textarea') return true
+    if (el.isContentEditable) return true
+    return false
+  }
+
+  _updateHandCursor(grabbing = false) {
+    const stack = /** @type {HTMLElement|null} */ (this.renderRoot?.getElementById('canvasStack'))
+    if (!stack) return
+    // Toggle classes for cursor styling
+    if (this._handActive) {
+      stack.classList.add('hand')
+      if (grabbing || this._panning) {
+        stack.classList.add('grabbing')
+      } else {
+        stack.classList.remove('grabbing')
+      }
+    } else {
+      stack.classList.remove('hand')
+      stack.classList.remove('grabbing')
+    }
   }
 
   _invalidate(flags = {}) {
@@ -318,6 +450,7 @@ export class MyElement extends LitElement {
         height: 100%;
         overflow: hidden;
         background: #000;
+        touch-action: none; /* prevent default touch/pan gestures interfering */
       }
       .canvas-stack .layer {
         position: absolute;
@@ -327,6 +460,13 @@ export class MyElement extends LitElement {
       }
       .canvas-stack .overlay {
         pointer-events: none; /* overlay shouldn't capture interactions yet */
+      }
+      /* Hand tool cursors */
+      .canvas-stack.hand {
+        cursor: grab;
+      }
+      .canvas-stack.hand.grabbing {
+        cursor: grabbing;
       }
 
       .empty {
