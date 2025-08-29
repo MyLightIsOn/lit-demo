@@ -34,6 +34,12 @@ export class MyElement extends LitElement {
     this._bitmap = null
     // Track whether viewport was initialized for current image
     this._vpInit = false
+
+    // Rendering loop state
+    this._dirtyImage = false
+    this._dirtyViewport = false
+    this._dirtyOverlay = false
+    this._raf = 0
   }
 
   render() {
@@ -71,20 +77,24 @@ export class MyElement extends LitElement {
   firstUpdated() {
     // Setup resize handling for DPR and container changes
     this._installResizeHandling()
-    // Initial draw
-    this._draw()
+    // Initial invalidate to kick the RAF loop
+    this._invalidate({ image: true, viewport: true, overlay: true })
   }
 
   disconnectedCallback() {
     super.disconnectedCallback()
     this._teardownResizeHandling()
+    if (this._raf) {
+      cancelAnimationFrame(this._raf)
+      this._raf = 0
+    }
   }
 
   updated(changed) {
     if (changed.has('_hasImage') || changed.has('_bitmap')) {
       // Reset viewport init when bitmap changes
       if (changed.has('_bitmap')) this._vpInit = false
-      this._draw()
+      this._invalidate({ image: true, viewport: true, overlay: true })
     }
   }
 
@@ -135,14 +145,14 @@ export class MyElement extends LitElement {
   }
 
   _installResizeHandling() {
-    // Redraw on window resize and DPR changes (e.g., browser zoom)
-    this._onResize = () => this._draw()
+    // Invalidate on window resize and DPR changes (e.g., browser zoom)
+    this._onResize = () => this._invalidate({ viewport: true, overlay: true })
     window.addEventListener('resize', this._onResize, { passive: true })
 
     // Observe container size changes precisely
     const stack = /** @type {HTMLElement|null} */ (this.renderRoot?.getElementById('canvasStack'))
     if (window.ResizeObserver && stack) {
-      this._ro = new ResizeObserver(() => this._draw())
+      this._ro = new ResizeObserver(() => this._invalidate({ viewport: true, overlay: true }))
       this._ro.observe(stack)
     }
 
@@ -150,7 +160,7 @@ export class MyElement extends LitElement {
     try {
       this._dprMql = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`)
       if (this._dprMql && this._dprMql.addEventListener) {
-        this._onDprChange = () => this._draw()
+        this._onDprChange = () => this._invalidate({ viewport: true, overlay: true })
         this._dprMql.addEventListener('change', this._onDprChange)
       }
     } catch {}
@@ -168,6 +178,41 @@ export class MyElement extends LitElement {
     this._onResize = null
     this._onDprChange = null
     this._dprMql = null
+  }
+
+  _invalidate(flags = {}) {
+    const { image = false, viewport = false, overlay = false } = flags
+    if (image) this._dirtyImage = true
+    if (viewport) this._dirtyViewport = true
+    if (overlay) this._dirtyOverlay = true
+    this._scheduleRender()
+  }
+
+  _scheduleRender() {
+    if (this._raf) return
+    this._raf = requestAnimationFrame(() => this._renderFrame())
+  }
+
+  _renderFrame() {
+    this._raf = 0
+    // Snapshot and clear dirty flags before draw
+    const needImage = this._dirtyImage
+    const needViewport = this._dirtyViewport
+    const needOverlay = this._dirtyOverlay
+    this._dirtyImage = false
+    this._dirtyViewport = false
+    this._dirtyOverlay = false
+
+    // If nothing is dirty, do nothing (idle)
+    if (!needImage && !needViewport && !needOverlay) return
+
+    // Perform the actual draw
+    this._draw()
+
+    // If new invalidations were requested during draw, schedule another frame
+    if (this._dirtyImage || this._dirtyViewport || this._dirtyOverlay) {
+      this._scheduleRender()
+    }
   }
 
   _draw() {
