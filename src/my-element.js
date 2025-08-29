@@ -1,6 +1,7 @@
 import { LitElement, css, html } from 'lit'
 import { ImageService } from './services/image-service.js'
 import { ViewportService } from './services/viewport-service.js'
+import { Telemetry } from './services/telemetry-service.js'
 
 // Embedded bundled sample image as data URL (1x1 transparent PNG)
 // This keeps the sample within the bundle without needing an external file.
@@ -43,6 +44,12 @@ export class MyElement extends LitElement {
     this._dirtyOverlay = false
     this._raf = 0
 
+    // Debug overlay toggle
+    this._showDebugOverlay = false
+
+    // Track first paint mark
+    this._didMarkFirstPaint = false
+
     // Input / interaction state
     this._spaceDown = false
     this._handActive = false // temporary hand while space held (no full tool system yet)
@@ -84,6 +91,8 @@ export class MyElement extends LitElement {
     this._installInputHandling()
     // Initial invalidate to kick the RAF loop
     this._invalidate({ image: true, viewport: true, overlay: true })
+    // Mark first meaningful paint when we draw the first frame
+    this._didMarkFirstPaint = false
   }
 
   disconnectedCallback() {
@@ -114,6 +123,7 @@ export class MyElement extends LitElement {
     this._loading = true
     try {
       // Load via ImageService from a bundled URL
+      Telemetry.mark('imageLoadStart'); Telemetry.startTimer('imageLoad')
       const { working } = await ImageService.loadFromUrl(SAMPLE_IMAGE_URL)
       this._bitmap = working
       this._hasImage = !!working
@@ -129,6 +139,7 @@ export class MyElement extends LitElement {
       this._hasImage = false
       this._bitmap = null
     } finally {
+      try { Telemetry.endTimer('imageLoad') } catch {}
       this._loading = false
     }
   }
@@ -148,6 +159,7 @@ export class MyElement extends LitElement {
     this._error = ''
     this._loading = true
     try {
+      Telemetry.mark('imageLoadStart'); Telemetry.startTimer('imageLoad')
       const { working } = await ImageService.loadFromFile(file)
       this._bitmap = working
       this._hasImage = !!working
@@ -163,6 +175,7 @@ export class MyElement extends LitElement {
       this._hasImage = false
       this._bitmap = null
     } finally {
+      try { Telemetry.endTimer('imageLoad') } catch {}
       this._loading = false
     }
   }
@@ -261,6 +274,16 @@ export class MyElement extends LitElement {
     window.addEventListener('keydown', this._onKeyDown)
     window.addEventListener('keyup', this._onKeyUp)
 
+    // Debug overlay toggle on backquote (`)
+    this._onDebugToggle = (e) => {
+      if (this._isTextInput(e.target)) return
+      if (e.key === '`' || e.code === 'Backquote' || e.key === 'd' || e.key === 'D') {
+        this._showDebugOverlay = !this._showDebugOverlay
+        this._invalidate({ overlay: true })
+      }
+    }
+    window.addEventListener('keydown', this._onDebugToggle)
+
     // Pointer: pan on drag while hand is active
     const base = /** @type {HTMLCanvasElement|null} */ (this.renderRoot?.getElementById('baseCanvas'))
     const stack = /** @type {HTMLElement|null} */ (this.renderRoot?.getElementById('canvasStack'))
@@ -325,6 +348,7 @@ export class MyElement extends LitElement {
   _teardownInputHandling() {
     window.removeEventListener('keydown', this._onKeyDown)
     window.removeEventListener('keyup', this._onKeyUp)
+    window.removeEventListener('keydown', this._onDebugToggle)
     const base = /** @type {HTMLCanvasElement|null} */ (this.renderRoot?.getElementById('baseCanvas'))
     const stack = /** @type {HTMLElement|null} */ (this.renderRoot?.getElementById('canvasStack'))
     if (base) {
@@ -397,6 +421,12 @@ export class MyElement extends LitElement {
 
     // Perform the actual draw
     this._draw()
+
+    // Mark firstPaint once after first frame is drawn
+    if (!this._didMarkFirstPaint) {
+      this._didMarkFirstPaint = true
+      try { Telemetry.markFirstPaint() } catch {}
+    }
 
     // If new invalidations were requested during draw, schedule another frame
     if (this._dirtyImage || this._dirtyViewport || this._dirtyOverlay) {
@@ -472,6 +502,70 @@ export class MyElement extends LitElement {
     if (this._downscaleInfo) {
       this._drawDownscaleBadge(octx, vw, vh)
     }
+
+    // Debug overlay (toggleable)
+    if (this._showDebugOverlay) {
+      this._drawDebugOverlay(octx, vw, vh, dpr, base)
+    }
+  }
+
+  // Debug overlay: zoom, pan, DPR, canvas sizes
+  _drawDebugOverlay(ctx, vw, vh, dpr, baseCanvas) {
+    // Context for overlay is set to DPR scale by caller; reset to CSS px space
+    ctx.save()
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+
+    const scale = ViewportService.scale
+    const tx = ViewportService.tx
+    const ty = ViewportService.ty
+    const cssSize = `${vw}×${vh} CSS px`
+    const pxSize = `${baseCanvas.width}×${baseCanvas.height} device px`
+
+    const lines = [
+      'Debug — press ` to toggle',
+      `Zoom: ${scale.toFixed(3)} (min ${ViewportService.minScale.toFixed(3)}, max ${ViewportService.maxScale.toFixed(3)})`,
+      `Pan: tx=${Math.round(tx)}, ty=${Math.round(ty)}`,
+      `DPR: ${dpr}`,
+      `Viewport: ${cssSize}`,
+      `Canvas: ${pxSize}`,
+    ]
+
+    const base = Math.max(10, Math.min(14, Math.round(Math.min(vw, vh) * 0.025)))
+    ctx.font = `500 ${base}px system-ui, -apple-system, Segoe UI, Roboto, sans-serif`
+    ctx.textAlign = 'left'
+    ctx.textBaseline = 'top'
+    const padding = Math.round(base * 0.6)
+    const lh = Math.round(base * 1.5)
+    const width = Math.ceil(Math.max(...lines.map(l => ctx.measureText(l).width))) + padding * 2
+    const height = lines.length * lh + padding * 2
+    const x = vw - width - 8
+    const y = 8
+
+    // Panel background rounded rect
+    ctx.fillStyle = 'rgba(0,0,0,0.6)'
+    const r = Math.min(8, Math.round(height * 0.12))
+    const right = x + width
+    const bottom = y + height
+    ctx.beginPath()
+    ctx.moveTo(x + r, y)
+    ctx.lineTo(right - r, y)
+    ctx.quadraticCurveTo(right, y, right, y + r)
+    ctx.lineTo(right, bottom - r)
+    ctx.quadraticCurveTo(right, bottom, right - r, bottom)
+    ctx.lineTo(x + r, bottom)
+    ctx.quadraticCurveTo(x, bottom, x, bottom - r)
+    ctx.lineTo(x, y + r)
+    ctx.quadraticCurveTo(x, y, x + r, y)
+    ctx.closePath()
+    ctx.fill()
+
+    // Text lines
+    ctx.fillStyle = 'rgba(255,255,255,0.95)'
+    lines.forEach((line, i) => {
+      this._drawTextWithShadow(ctx, line, x + padding, y + padding + i * lh + Math.round((lh - base) / 2))
+    })
+
+    ctx.restore()
   }
 
   // --- Overlay drawing helpers ---------------------------------------------
@@ -548,6 +642,7 @@ export class MyElement extends LitElement {
   }
 
   _drawDownscaleBadge(ctx, vw, vh) {
+    // existing badge drawing
     const info = this._downscaleInfo
     if (!info) return
     const text = `Preview downscaled to ${info.percent}%`

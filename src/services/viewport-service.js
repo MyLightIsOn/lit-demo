@@ -13,6 +13,8 @@
  * @typedef {{x:number,y:number}} Point
  */
 
+import { Telemetry } from './telemetry-service.js'
+
 class ViewportServiceImpl {
   constructor() {
     // Viewport (canvas CSS pixels, not DPR-scaled)
@@ -183,12 +185,15 @@ class ViewportServiceImpl {
    * @param {number} sy
    */
   zoomAt(factor, sx, sy) {
+    // Telemetry: count zoom attempts that change scale
     if (!isFinite(factor) || factor === 0) return
     const oldScale = this.scale
     let nextScale = oldScale * factor
     // Clamp scale
     nextScale = Math.max(this.minScale, Math.min(this.maxScale, nextScale))
     if (nextScale === oldScale) return
+    // Count zoom only when scale actually changes
+    try { Telemetry.increment('zoomEvents', 1) } catch {}
 
     // Keep the image point under (sx, sy) stable:
     // imageX = (sx - tx) / oldScale; new tx' = sx - imageX * nextScale
@@ -210,6 +215,8 @@ class ViewportServiceImpl {
     if (!dx && !dy) return
     this.tx += dx
     this.ty += dy
+    // Count pan events when movement occurs
+    try { Telemetry.increment('panEvents', 1) } catch {}
     this.clampPan()
   }
 
