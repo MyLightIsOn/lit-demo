@@ -65,17 +65,10 @@ export class MyElement extends LitElement {
       </div>
 
       <div class="content">
-        ${this._hasImage
-          ? html`
-              <div class="canvas-stack" id="canvasStack">
-                <canvas id="baseCanvas" class="layer base" width="1" height="1"></canvas>
-                <canvas id="overlayCanvas" class="layer overlay" width="1" height="1"></canvas>
-              </div>
-            `
-          : html`<div class="empty">
-              <p class="empty-msg">${this.docsHint}</p>
-              <p class="empty-sub">Click “Upload image” or “Choose sample” to get started.</p>
-            </div>`}
+        <div class="canvas-stack" id="canvasStack">
+          <canvas id="baseCanvas" class="layer base" width="1" height="1"></canvas>
+          <canvas id="overlayCanvas" class="layer overlay" width="1" height="1"></canvas>
+        </div>
       </div>
 
       ${this._error ? html`<p class="error">${this._error}</p>` : ''}
@@ -434,6 +427,8 @@ export class MyElement extends LitElement {
     octx.clearRect(0, 0, overlay.width, overlay.height)
 
     if (!this._bitmap) {
+      // Draw empty state overlay when no image is loaded
+      this._drawEmptyOverlay(octx, vw, vh, dpr)
       return
     }
 
@@ -456,17 +451,81 @@ export class MyElement extends LitElement {
     // Reset transform for overlay; overlay will draw in CSS pixels scaled by DPR
     octx.setTransform(dpr, 0, 0, dpr, 0, 0)
 
-    // Example minimal overlay: draw a crisp border rectangle and center crosshair
-    octx.strokeStyle = 'rgba(255,255,255,0.25)'
-    octx.lineWidth = 1
-    octx.strokeRect(0.5, 0.5, vw - 1, vh - 1) // 0.5 aligns stroke to pixel grid
+    // Overlay hints when image is present (no selection system yet): show brush hint
+    this._drawOnImageHint(octx, vw, vh)
+  }
 
-    octx.beginPath()
-    octx.moveTo((vw / 2) - 10, vh / 2)
-    octx.lineTo((vw / 2) + 10, vh / 2)
-    octx.moveTo(vw / 2, (vh / 2) - 10)
-    octx.lineTo(vw / 2, (vh / 2) + 10)
-    octx.stroke()
+  // --- Overlay drawing helpers ---------------------------------------------
+  /**
+   * Draws the empty-state overlay message in CSS pixel space using DPR scale.
+   * @param {CanvasRenderingContext2D} ctx
+   * @param {number} vw viewport width in CSS px
+   * @param {number} vh viewport height in CSS px
+   * @param {number} dpr device pixel ratio
+   */
+  _drawEmptyOverlay(ctx, vw, vh, dpr) {
+    // Scale to CSS pixel coordinates (caller already cleared to identity)
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+
+    const title = 'Choose an image to get started'
+    const sub = 'Click “Upload image” or “Choose sample” to get started.'
+
+    // Choose font sizes relative to viewport but within sensible bounds
+    const base = Math.max(12, Math.min(24, Math.round(Math.min(vw, vh) * 0.04)))
+    const subSize = Math.max(10, Math.round(base * 0.8))
+
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+
+    // Title
+    ctx.font = `600 ${base}px system-ui, -apple-system, Segoe UI, Roboto, sans-serif`
+    ctx.fillStyle = 'rgba(255,255,255,0.9)'
+    this._drawTextWithShadow(ctx, title, vw / 2, vh / 2 - base * 0.1)
+
+    // Subtitle
+    ctx.font = `400 ${subSize}px system-ui, -apple-system, Segoe UI, Roboto, sans-serif`
+    ctx.fillStyle = 'rgba(255,255,255,0.75)'
+    this._drawTextWithShadow(ctx, sub, vw / 2, vh / 2 + base * 1.1)
+
+    // Draw a subtle border for context
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)'
+    ctx.lineWidth = 1
+    ctx.strokeRect(0.5, 0.5, vw - 1, vh - 1)
+  }
+
+  /**
+   * Draws on-image hint when there is no active selection/tools yet.
+   * @param {CanvasRenderingContext2D} ctx
+   * @param {number} vw
+   * @param {number} vh
+   */
+  _drawOnImageHint(ctx, vw, vh) {
+    const hint = 'Press B for Brush — coming next'
+    const base = Math.max(11, Math.min(18, Math.round(Math.min(vw, vh) * 0.03)))
+
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'bottom'
+    ctx.font = `500 ${base}px system-ui, -apple-system, Segoe UI, Roboto, sans-serif`
+    ctx.fillStyle = 'rgba(255,255,255,0.9)'
+
+    // Position near bottom center with margin
+    const margin = Math.max(12, Math.round(base * 1.5))
+    this._drawTextWithShadow(ctx, hint, vw / 2, vh - margin)
+
+    // Optional: subtle border
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)'
+    ctx.lineWidth = 1
+    ctx.strokeRect(0.5, 0.5, vw - 1, vh - 1)
+  }
+
+  _drawTextWithShadow(ctx, text, x, y) {
+    ctx.save()
+    ctx.shadowColor = 'rgba(0,0,0,0.6)'
+    ctx.shadowBlur = 2
+    ctx.shadowOffsetX = 0
+    ctx.shadowOffsetY = 1
+    ctx.fillText(text, Math.round(x), Math.round(y))
+    ctx.restore()
   }
 
   static get styles() {
